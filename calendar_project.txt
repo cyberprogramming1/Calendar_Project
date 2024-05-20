@@ -1,0 +1,246 @@
+import pyodbc
+from datetime import datetime, timedelta
+import calendar
+class Event:
+    def __init__(self, id, title, description, event_date):
+        self.id = id
+        self.title = title
+        self.description = description
+        self.event_date = event_date
+
+class RecurringEvent:
+    def __init__(self, id, title, description, start_date, end_date, recurrence_pattern):
+        self.id = id
+        self.title = title
+        self.description = description
+        self.start_date = start_date
+        self.end_date = end_date
+        self.recurrence_pattern = recurrence_pattern
+
+class Location:
+    def __init__(self, id, name, address):
+        self.id = id
+        self.name = name
+        self.address = address
+
+class Calendar:
+    def __init__(self, server, database):
+        self.conn = pyodbc.connect(f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes;')
+        self.cursor = self.conn.cursor()
+        
+        self.create_locations_table()
+        self.create_event_locations_table()
+    
+    def create_locations_table(self):
+        """Create the locations table if it does not exist."""
+        sql = """
+            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'locations')
+            BEGIN
+                CREATE TABLE locations (
+                    id INT PRIMARY KEY IDENTITY(1,1),
+                    name NVARCHAR(100),
+                    address NVARCHAR(255)
+                );
+            END
+        """
+        self.cursor.execute(sql)
+        self.conn.commit()
+        print("Locations table created or already exists.")
+    
+    def create_event_locations_table(self):
+        """Create the event_locations table if it does not exist."""
+        sql = """
+            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'event_locations')
+            BEGIN
+                CREATE TABLE event_locations (
+                    event_id INT,
+                    location_id INT,
+                    PRIMARY KEY (event_id, location_id),
+                    FOREIGN KEY (event_id) REFERENCES events(id),
+                    FOREIGN KEY (location_id) REFERENCES locations(id)
+                );
+            END
+        """
+        self.cursor.execute(sql)
+        self.conn.commit()
+        print("Event_locations table created or already exists.")
+    
+    def edit_event(self, event_id, title, description, event_date):
+        """Edit an existing event in the database."""
+        sql = "UPDATE events SET title = ?, description = ?, event_date = ? WHERE id = ?"
+        self.cursor.execute(sql, (title, description, event_date, event_id))
+        self.conn.commit()
+        print(f"Event with ID {event_id} edited successfully.")
+    
+    def delete_event(self, event_id):
+        """Delete an event from the database by its ID."""
+        sql_delete_event = "DELETE FROM events WHERE id = ?"
+        self.cursor.execute(sql_delete_event, (event_id,))
+        self.conn.commit()
+        print(f"Event with ID {event_id} deleted successfully.")
+
+
+    def add_event(self, event, locations=None):
+        sql = "INSERT INTO events (title, description, event_date) VALUES (?, ?, ?)"
+        self.cursor.execute(sql, (event.title, event.description, event.event_date))
+        self.conn.commit()
+        event_id = self.cursor.execute("SELECT SCOPE_IDENTITY()").fetchone()[0]
+
+        if locations:
+            for location in locations:
+                location_id = self._get_or_create_location(location)
+                self._associate_event_with_location(event_id, location_id)
+
+    def add_recurring_event(self, recurring_event):
+        sql = "INSERT INTO recurring_events (title, description, start_date, end_date, recurrence_pattern) VALUES (?, ?, ?, ?, ?)"
+        self.cursor.execute(sql, (recurring_event.title, recurring_event.description, recurring_event.start_date, recurring_event.end_date, recurring_event.recurrence_pattern))
+        self.conn.commit()
+        recurring_event_id = self.cursor.execute("SELECT SCOPE_IDENTITY()").fetchone()[0]
+        print(f"Debug: Recurring Event ID {recurring_event_id} added.")
+        self._generate_recurring_events(recurring_event)
+
+    def _generate_recurring_events(self, recurring_event):
+        current_date = recurring_event.start_date
+        while current_date <= recurring_event.end_date:
+            event = Event(None, recurring_event.title, recurring_event.description, current_date)
+            self.add_event(event)
+            if recurring_event.recurrence_pattern == 'daily':
+                current_date += timedelta(days=1)
+            elif recurring_event.recurrence_pattern == 'weekly':
+                current_date += timedelta(weeks=1)
+            elif recurring_event.recurrence_pattern == 'monthly':
+                current_date = (current_date.replace(day=1) + timedelta(days=32)).replace(day=recurring_event.start_date.day)
+
+    def _get_or_create_location(self, location):
+        sql = "SELECT id FROM locations WHERE name = ? AND address = ?"
+        result = self.cursor.execute(sql, (location.name, location.address)).fetchone()
+        if result:
+            return result[0]
+        else:
+            sql = "INSERT INTO locations (name, address) VALUES (?, ?)"
+            self.cursor.execute(sql, (location.name, location.address))
+            self.conn.commit()
+            return self.cursor.execute("SELECT SCOPE_IDENTITY()").fetchone()[0]
+
+    def _associate_event_with_location(self, event_id, location_id):
+        sql = "INSERT INTO event_locations (event_id, location_id) VALUES (?, ?)"
+        self.cursor.execute(sql, (event_id, location_id))
+        self.conn.commit()
+
+    def get_events(self, date):
+        sql = "SELECT e.id, e.title, e.description, e.event_date FROM events e WHERE e.event_date = ?"
+        self.cursor.execute(sql, (date,))
+        rows = self.cursor.fetchall()
+        events = [Event(row.id, row.title, row.description, row.event_date) for row in rows]
+        return events
+
+    def display_monthly_calendar(self, year, month):
+        cal = calendar.monthcalendar(year, month)
+        for week in cal:
+            for day in week:
+                if day == 0:
+                    print("   ", end=' ')
+                else:
+                    events = self.get_events(datetime(year, month, day).date())
+                    if events:
+                        print(f"{day:2}*", end=' ')
+                    else:
+                        print(f"{day:2} ", end=' ')
+            print()
+
+    def close_connection(self):
+        self.conn.close()
+
+class CalendarApp:
+    def __init__(self, server, database):
+        self.calendar = Calendar(server, database)
+
+    def run(self):
+        while True:
+            print("\n1. Add Event")
+            print("2. Edit Event")
+            print("3. Delete Event")
+            print("4. Display Events for Today")
+            print("5. Display Monthly Calendar")
+            print("6. Add Recurring Event")
+            print("7. Exit")
+
+            choice = input("\nEnter your choice: ")
+
+            if choice == '1':
+                self.add_event()
+            elif choice == '2':
+                self.edit_event()
+            elif choice == '3':
+                self.delete_event()
+            elif choice == '4':
+                self.display_events_today()
+            elif choice == '5':
+                self.display_monthly_calendar()
+            elif choice == '6':
+                self.add_recurring_event()
+            elif choice == '7':
+                self.calendar.close_connection()
+                break
+            else:
+                print("Invalid choice. Please try again.")
+
+    def add_event(self):
+        title = input("Enter event title: ")
+        description = input("Enter event description: ")
+        event_date = input("Enter event date (YYYY-MM-DD): ")
+        new_event = Event(None, title, description, datetime.strptime(event_date, "%Y-%m-%d").date())
+        self.calendar.add_event(new_event)
+        print("Event added successfully.")
+
+    def add_recurring_event(self):
+        title = input("Enter recurring event title: ")
+        description = input("Enter recurring event description: ")
+        start_date = input("Enter start date (YYYY-MM-DD): ")
+        end_date = input("Enter end date (YYYY-MM-DD): ")
+
+        valid_patterns = ['daily', 'weekly', 'monthly']
+        while True:
+            recurrence_pattern = input("Enter recurrence pattern (daily, weekly, monthly): ").lower()
+            if recurrence_pattern in valid_patterns:
+                break
+            else:
+                print("Invalid recurrence pattern. Please enter 'daily', 'weekly', or 'monthly'.")
+
+        new_recurring_event = RecurringEvent(None, title, description, datetime.strptime(start_date, "%Y-%m-%d").date(), datetime.strptime(end_date, "%Y-%m-%d").date(), recurrence_pattern)
+        self.calendar.add_recurring_event(new_recurring_event)
+        print("Recurring event added successfully.")
+
+    def edit_event(self):
+        event_id = input("Enter event id: ")
+        title = input("Enter new event title: ")
+        description = input("Enter new event description: ")
+        event_date = input("Enter new event date (YYYY-MM-DD): ")
+        self.calendar.edit_event(int(event_id), title, description, datetime.strptime(event_date, "%Y-%m-%d").date())
+        print("Event edited successfully.")
+
+    def delete_event(self):
+        event_id = input("Enter event id: ")
+        self.calendar.delete_event(int(event_id))
+        print("Event deleted successfully.")
+
+    def display_events_today(self):
+        today_date = datetime.now().date()
+        print(f"Debug: Displaying events for today: {today_date}")
+        today_events = self.calendar.get_events(today_date)
+        if not today_events:
+            print("No events for today.")
+        for event in today_events:
+            print(f"{event.event_date}: {event.title} - {event.description}")
+
+    def display_monthly_calendar(self):
+        year = datetime.now().year
+        month = datetime.now().month
+        self.calendar.display_monthly_calendar(year, month)
+
+# Example usage
+server_name = 'DESKTOP-VIKK52P'
+database_name = 'Calendar'
+
+app = CalendarApp(server_name, database_name)
+app.run()
