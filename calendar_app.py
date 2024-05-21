@@ -2,7 +2,7 @@ from calendar_file import Calendar_file
 from event import Event, RecurringEvent
 from datetime import datetime, timedelta
 from location import Location
-
+from tabulate import tabulate
 class CalendarApp:
     def __init__(self, server, database):
         self.calendar = Calendar_file(server, database)
@@ -85,7 +85,27 @@ class CalendarApp:
         location_id = input("Enter location ID: ")
         self.calendar.delete_location(int(location_id))
         print("Location deleted successfully.")
-    
+
+    def display_events_today(self):
+
+        today_date = datetime.now().date()
+        print(f"Events for today: {today_date}")
+        today_events = self.calendar.get_events(today_date)
+        if not today_events:
+         print("No events for today.")
+        else:
+      # Try displaying events using tabulate (if available)
+            try:
+                from tabulate import tabulate
+                event_data = [(event.event_date, event.title, event.description) for event in today_events]
+                headers = ["Date", "Title", "Description"]
+                print(tabulate(event_data, headers=headers, tablefmt="grid"))
+            except ImportError:
+        # Fallback to basic string formatting if tabulate is unavailable
+                print("Table display unavailable. Here are the events:")
+            for event in today_events:
+                print(f"{event.event_date}: {event.title} - {event.description}")
+
     def filter_events(self):
         criteria = {}
         date = input("Enter event date (YYYY-MM-DD): ")
